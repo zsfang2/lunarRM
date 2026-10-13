@@ -66,7 +66,7 @@ def test_spawn_workers_equal_single_process_after_cache_open(tmp_path, monkeypat
     monkeypatch.setenv("MKL_THREADING_LAYER", "GNU")
     ds = LunarDataset(build_dataset(tmp_path / "data"))
     expected = [ds[i] for i in range(len(ds))]
-    loader = DataLoader(ds, batch_size=2, num_workers=2, multiprocessing_context="spawn")
+    loader = DataLoader(ds, batch_size=2, num_workers=2, multiprocessing_context="spawn", timeout=30)
     seen = []
     for batch in loader:
         for j, sid in enumerate(batch["sample_id"]):
@@ -76,6 +76,21 @@ def test_spawn_workers_equal_single_process_after_cache_open(tmp_path, monkeypat
                 torch.testing.assert_close(batch[key][j], expected[k][key])
             seen.append((sid, batch["band"][j]))
     assert len(set(seen)) == len(ds)
+
+
+def test_full_feature_cache_matches_uncached_and_los_is_not_mask(tmp_path):
+    from lunar_rm.registry import FULL_FEATURES
+    root = build_dataset(tmp_path / "data")
+    plain = LunarDataset(root, features=FULL_FEATURES)[0]
+    ds = LunarDataset(root, features=FULL_FEATURES, cache_dir=tmp_path / "cache")
+    cold, warm = ds[0], ds[0]
+    for key in ("features", "baseline_db", "geometric_los"):
+        torch.testing.assert_close(plain[key], cold[key], atol=0, rtol=0)
+        torch.testing.assert_close(cold[key], warm[key], atol=0, rtol=0)
+    # The synthetic DEM is planar: invalid supervision is still geometric LoS.
+    assert plain["geometric_los"].all()
+    assert not plain["valid_mask"].all()
+    assert len(list((tmp_path / "cache").glob("*.npz"))) == 1
 
 
 @pytest.mark.real_data

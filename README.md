@@ -3,7 +3,7 @@
 ## 新实验配置（开发中）
 
 配置注册已提供 A0/N0/N1/R0/G0/R1/R2，以及 R2 的特征、损失、
-NLoS 权重和直接输出消融。新模型和训练引擎尚待实现；目前没有正式训练结果。
+NLoS 权重和直接输出消融。模型与物理特征已提供，训练引擎尚待实现；目前没有正式训练结果。
 旧入口仍使用官方截断后的归一化标签，其验证结果不等同于完整的原始 dB GT 评价。
 
 ```bash
@@ -35,7 +35,7 @@ python -m pytest tests/test_data.py -q -m real_data
 大型数组记录形状、dtype、大小和修改时间，这不是数组全内容校验和。
 
 `lunar_rm.data.LunarDataset` 返回独立的米制 DEM、原始 dB GT、官方 mask、TX 和双频身份；
-只读 mmap 在 worker 内重开。当前输入特征支持高度/TX/band/FSPL；几何和剖面特征后续接入。
+只读 mmap 在 worker 内重开。输入特征支持高度/TX/band/FSPL、相对坐标/高度、坡度、曲率代理、LoS/Fresnel。
 `augment=True` 仅用于 train，同步变换 DEM/TX/原始 GT/mask，随后重算 FSPL。
 每个 epoch 的 DataLoader 迭代开始前调用 `dataset.set_epoch(epoch)`，共享 epoch 对 persistent
 worker 可见。增强由 seed、epoch、样本身份和频段确定，独立于 worker RNG。
@@ -43,6 +43,28 @@ worker 可见。增强由 seed、epoch、样本身份和频段确定，独立于
 评价仍使用未截断的 `target_db`。FSPL 使用原始米制高度，Tx/Rx 地上高度分别为 3/1 m。
 默认测试使用合成数据，不需要真实数据或 GPU。spawn 测试显式使用 `MKL_THREADING_LAYER=GNU`，
 避免本机 Conda NumPy/PyTorch 的 Intel MKL 与 GNU OpenMP 冲突。
+
+## 物理特征与模型前向
+
+```bash
+python scripts/check_forward.py --data-root /home/DataDisk/zsfang/lunarRM --device cpu
+```
+
+此命令对七个必需方法各取 val 两频段一个样本，只检查 `(1,1,256,256)` 输出和有限值，
+打印真实参数量，不训练。Tiny 使用深度可分离卷积、GroupNorm、多尺度 skip；默认约 0.236M 参数。
+R0/G0 同输入同主干；直接输出 `20+208*z`，残差输出 `FSPL+208*r`，残差不加非负限制。
+N1 是原普通 U-Net（约 1.964M），不标为 Tiny。参数目标命中不代表精度或时延目标已经达成。
+
+几何原始量中，相对行列/高度单位为米，坡度无量纲，Laplacian 曲率代理为 1/m；
+输入通道分别将相对坐标除以 256、相对高度除以 496，坡度/曲率代理原样输入。
+剖面使用双线性地形插值，只采内部点，默认水平间隔不超过 1 m，可设置 0.5/1/2 m。
+净空为直射线高于地形的高度，最小净空非负定义为 LoS；Fresnel 为内部最小净空/半径。
+半径使用三维总距离与水平路径分数近似；零水平或无内部采样点路径约定 LoS=true、两个净空指标为 0。
+接收像素分块，临时数组先做内存预算检查，极小步长超预算会拒绝；几何 LoS 始终独立于监督 mask。
+
+可在配置设置 `cache_dir` 启用独立物理缓存。键包括输入数据身份和 DEM 摘要、算法版本、
+参数、dtype、TX/terrain/sample、实际依赖的频段及增强；不使用 GT/mask 生成物理特征。
+缓存原子保存，命中时验证字段、版本、shape/dtype/有限值，损坏或不完整缓存会报错。
 
 This baseline trains one frequency-conditioned U-Net for both challenge bands.
 The three input channels are normalized terrain height, the transmitter one-hot

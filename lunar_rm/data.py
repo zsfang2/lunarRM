@@ -1,6 +1,7 @@
 """Project adapter exposing unmodified raw dB supervision and sample identity."""
 
 import json
+import hashlib
 import multiprocessing
 import os
 from pathlib import Path
@@ -10,7 +11,8 @@ import torch
 from torch.utils.data import Dataset
 
 from .registry import FEATURES
-from .features import BAND_FREQUENCIES_HZ, fspl_db
+from .features import BAND_FREQUENCIES_HZ, FEATURE_VERSION, fspl_db, geometry_features, profile_features
+from .cache import FeatureCache, cache_key
 from .transforms import augment_code, normalize_height, normalize_pathloss, spatial_transform
 from .storage import (BANDS, GRID, file_identity, open_array, read_index,
                       split_paths, validate_index_rows)
@@ -25,7 +27,9 @@ class LunarDataset(Dataset):
     """
 
     def __init__(self, root, split="train", bands=BANDS, features=("height", "tx", "band"),
-                 *, augment=False, seed=2027, target_mode="raw_db"):
+                 *, augment=False, seed=2027, target_mode="raw_db", need_los=False,
+                 profile_step_m=1.0, receiver_chunk_size=128, feature_dtype="float32",
+                 memory_budget_mb=64, cache_dir=None):
         self.root = Path(root).resolve()
         self.split = split
         self.paths = split_paths(self.root, split)
@@ -37,6 +41,12 @@ class LunarDataset(Dataset):
             raise ValueError("unsupported target_mode")
         augment_code(seed, 0, "validate_seed", "415")
         self.augment, self.seed, self.target_mode = augment, seed, target_mode
+        self.need_los = need_los
+        self.profile_step_m, self.receiver_chunk_size = profile_step_m, receiver_chunk_size
+        self.feature_dtype, self.memory_budget_mb = str(np.dtype(feature_dtype)), memory_budget_mb
+        if self.feature_dtype not in ("float32", "float64"):
+            raise ValueError("feature_dtype must be float32 or float64")
+        self.cache = FeatureCache(cache_dir, data_root=self.root) if cache_dir is not None else None
         # Shared spawn-context scalar keeps persistent workers at the main epoch.
         self._epoch = multiprocessing.get_context("spawn").Value("q", 0)
         self.bands = tuple(bands)
@@ -45,8 +55,6 @@ class LunarDataset(Dataset):
             raise ValueError("bands must be a nonempty unique sequence of 415/58")
         if len(set(self.feature_names)) != len(self.feature_names) or set(self.feature_names) - FEATURES:
             raise ValueError("unknown, duplicate or forbidden input feature")
-        if set(self.feature_names) - {"height", "tx", "band", "fspl"}:
-            raise ValueError("physical input channels require the physical feature pipeline")
         self.rows = read_index(self.paths["index"])
         self.metadata = json.loads((self.root / "metadata.json").read_text())
         if self.metadata.get("grid") != list(GRID):
@@ -103,6 +111,45 @@ class LunarDataset(Dataset):
             self._arrays[field] = open_array(self.paths[field])
         return self._arrays[field]
 
+    def _physical(self, dem, tx, row, band, code):
+        geometry_names = {"relative_row", "relative_col", "relative_height", "slope", "curvature_proxy"}
+        want_geometry = bool(set(self.feature_names) & geometry_names)
+        want_profiles = self.need_los or bool(set(self.feature_names) & {"los", "fresnel"})
+        want_baseline = "fspl" in self.feature_names or not self.feature_names
+        expected = ({"fspl"} if want_baseline else set()) | (geometry_names if want_geometry else set())
+        if want_profiles:
+            expected |= {"los", "fresnel", "clearance_m"}
+        if not expected:
+            return {}
+        identity = {"version": FEATURE_VERSION, "dtype": self.feature_dtype,
+                    "features": sorted(expected), "step_m": self.profile_step_m,
+                    "chunk_size": self.receiver_chunk_size, "memory_budget_mb": self.memory_budget_mb,
+                    "tx": list(tx), "terrain_id": row["terrain_id"], "sample_id": row["sample_id"],
+                    "frequency_hz": BAND_FREQUENCIES_HZ[band] if want_baseline or want_profiles else None,
+                    "band": band if want_baseline or want_profiles else None,
+                    "augmentation_code": code, "spacing_m": self.metadata["resolution_m_per_px"],
+                    "dem_sha256": hashlib.sha256(dem.tobytes()).hexdigest(),
+                    "input_files": {k: v for k, v in self.identity["files"].items()
+                                    if k.endswith(("hm.npy", "index.csv")) or k == "metadata.json"}}
+        key = cache_key(identity)
+        if self.cache is not None:
+            cached = self.cache.get(key, identity, expected, dem.shape)
+            if cached is not None:
+                return cached
+        common = {"spacing_m": identity["spacing_m"], "dtype": self.feature_dtype}
+        result = {}
+        if want_baseline:
+            result["fspl"] = fspl_db(dem, tx, BAND_FREQUENCIES_HZ[band], **common)
+        if want_geometry:
+            result.update(geometry_features(dem, tx, **common))
+        if want_profiles:
+            result.update(profile_features(dem, tx, BAND_FREQUENCIES_HZ[band], **common,
+                                           step_m=self.profile_step_m, chunk_size=self.receiver_chunk_size,
+                                           memory_budget_mb=self.memory_budget_mb))
+        if self.cache is not None:
+            self.cache.put(key, identity, result)
+        return result
+
     def __getitem__(self, index):
         if index < 0:
             index += len(self)
@@ -126,13 +173,21 @@ class LunarDataset(Dataset):
             r, c = (int(v) for v in np.argwhere(tx == 1)[0])
         channel = {"height": normalize_height(dem), "tx": tx,
                    "band": np.full(GRID, float(band == "58"), dtype=np.float32)}
+        physical = self._physical(dem, (r, c), row, band, code)
         physics = {}
-        if "fspl" in self.feature_names or not self.feature_names:
-            baseline = fspl_db(dem, (r, c), BAND_FREQUENCIES_HZ[band],
-                               spacing_m=self.metadata["resolution_m_per_px"], dtype=np.float32)
-            channel["fspl"] = normalize_pathloss(baseline)
-            physics["baseline_db"] = torch.from_numpy(baseline[None])
-        features = np.stack([channel[k] for k in self.feature_names]) if self.feature_names else np.empty((0, *GRID), dtype=np.float32)
+        for name, value in physical.items():
+            if name == "fspl":
+                channel[name] = normalize_pathloss(value)
+                physics["baseline_db"] = torch.from_numpy(value.astype(np.float32)[None])
+            elif name in ("relative_row", "relative_col"):
+                channel[name] = value / 256.0  # metre offsets / fixed map width in metres
+            elif name == "relative_height":
+                channel[name] = value / 496.0
+            elif name != "clearance_m":
+                channel[name] = value.astype(np.float32)
+            if name == "los":
+                physics["geometric_los"] = torch.from_numpy(value[None])
+        features = np.stack([channel[k] for k in self.feature_names]).astype(np.float32) if self.feature_names else np.empty((0, *GRID), dtype=np.float32)
         training_target = np.clip(target, 20, 228) if self.target_mode == "official_clipped" else target.copy()
         return {**physics, "raw_dem_m": torch.from_numpy(dem[None]), "tx_map": torch.from_numpy(tx[None]),
                 "target_db": torch.from_numpy(target[None]), "valid_mask": torch.from_numpy(mask[None]),
@@ -144,3 +199,11 @@ class LunarDataset(Dataset):
                 "index_row": row_idx, "hm_row": hm_row, "tx_index": int(row["tx_index"]),
                 "group": row["group"], "tx_row": r, "tx_col": c,
                 "original_tx_row": original_r, "original_tx_col": original_c}
+
+
+def dataset_from_config(cfg, split, *, augment=False, need_los=False):
+    return LunarDataset(cfg.data_root, split=split, bands=cfg.bands, features=cfg.features,
+                        augment=augment, seed=cfg.seed, target_mode=cfg.target_mode,
+                        need_los=need_los or cfg.nlos_alpha > 0,
+                        profile_step_m=cfg.profile_step_m, receiver_chunk_size=cfg.receiver_chunk_size,
+                        feature_dtype=cfg.feature_dtype, cache_dir=cfg.cache_dir)

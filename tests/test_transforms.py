@@ -89,7 +89,7 @@ def test_epoch_shared_with_persistent_spawn_workers(tmp_path, monkeypatch):
     monkeypatch.setenv("MKL_THREADING_LAYER", "GNU")
     ds = LunarDataset(build_dataset(tmp_path / "data"), augment=True, seed=3)
     loader = DataLoader(ds, batch_size=2, num_workers=2, persistent_workers=True,
-                        multiprocessing_context="spawn")
+                        multiprocessing_context="spawn", timeout=30)
     observed_codes = []
     try:
         for epoch in (0, 2, 0):
