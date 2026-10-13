@@ -66,6 +66,34 @@ N1 是原普通 U-Net（约 1.964M），不标为 Tiny。参数目标命中不�
 参数、dtype、TX/terrain/sample、实际依赖的频段及增强；不使用 GT/mask 生成物理特征。
 缓存原子保存，命中时验证字段、版本、shape/dtype/有限值，损坏或不完整缓存会报错。
 
+## 原始 dB 独立评价与训练目标
+
+```bash
+# A0 不需要 checkpoint；此命令会完整读取 val，不做参数更新。
+python scripts/evaluate.py --experiment A0 --device cpu --num-workers 0 \
+  --data-root /home/DataDisk/zsfang/lunarRM --output reports/a0-val.json
+# 学习模型必须指定 checkpoint；默认从中重建配置。
+python scripts/evaluate.py --checkpoint runs/N0/best.pt --device cpu \
+  --num-workers 0 --output reports/n0-val.json
+```
+
+当前已提供评价入口和 checkpoint 读取契约，训练 checkpoint 的生成由后续训练框架接入。
+`--max-per-band 2` 直接选取各频段固定的前两项，输出标记为 `subset`，禁止用于完整验证选优。
+完整评价核对 `(band,sample_id)` 唯一身份和全部索引覆盖；对官方完整 val 应读取 4,660 项。
+逐频段以 float64 累计原始 dB GT 的 SSE/SAE/有效像素数，最后计算 RMSE/MAE，
+双频分数为两个 RMSE 的算术平均。空频段返回 null；没有两个有效频段时不能选 best。
+固定预测下累计顺序不随 batch 分界变化；神经网络在不同 batch/kernel 下的浮点舍入可能有微小差异。
+报告包含解析后配置、代码摘要、数据/官方加载器身份和 checkpoint SHA256；输出文件禁止覆盖或写进数据根。
+
+`BalancedBatchSampler` 每个 batch 的频段项数相同，尾 batch 保留且仍均衡，不丢样本；
+batch size 必须能被频段数整除。状态包含 seed/epoch 和尾 batch 策略，仅承诺 epoch 边界恢复。
+masked MAE/MSE 在每频段有效像素内求均值，再对非空频段等权平均；
+可选 NLoS 项同样只在有有效 NLoS 像素的频段内归约后等权，加权系数为 `nlos_alpha`。
+损失用 FP32，优化量除以 208 或 208²；未缩放误差分别是 dB 或 dB²。
+空 mask 项计数并跳过；全空 batch 返回无损失，不允许伪造一次优化更新。
+
+## 旧原型入口（尚未迁移至上述框架）
+
 This baseline trains one frequency-conditioned U-Net for both challenge bands.
 The three input channels are normalized terrain height, the transmitter one-hot
 map, and a constant band channel (0 for 415 MHz and 1 for 5.775 GHz). The model
