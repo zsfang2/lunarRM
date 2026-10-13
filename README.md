@@ -77,7 +77,7 @@ python scripts/evaluate.py --checkpoint runs/N0/best.pt --device cpu \
   --num-workers 0 --output reports/n0-val.json
 ```
 
-当前已提供评价入口和 checkpoint 读取契约，训练 checkpoint 的生成由后续训练框架接入。
+训练框架使用同一评价函数，生成的 checkpoint 可直接用于此独立评价入口。
 `--max-per-band 2` 直接选取各频段固定的前两项，输出标记为 `subset`，禁止用于完整验证选优。
 完整评价核对 `(band,sample_id)` 唯一身份和全部索引覆盖；对官方完整 val 应读取 4,660 项。
 逐频段以 float64 累计原始 dB GT 的 SSE/SAE/有效像素数，最后计算 RMSE/MAE，
@@ -92,47 +92,33 @@ masked MAE/MSE 在每频段有效像素内求均值，再对非空频段等权�
 损失用 FP32，优化量除以 208 或 208²；未缩放误差分别是 dB 或 dB²。
 空 mask 项计数并跳过；全空 batch 返回无损失，不允许伪造一次优化更新。
 
-## 旧原型入口（尚未迁移至上述框架）
-
-This baseline trains one frequency-conditioned U-Net for both challenge bands.
-The three input channels are normalized terrain height, the transmitter one-hot
-map, and a constant band channel (0 for 415 MHz and 1 for 5.775 GHz). The model
-predicts normalized pathloss and is trained only on valid ray-traced pixels.
-
-The official `lunar_dataset.py` in the dataset directory performs memory-mapped
-loading, heightmap lookup, TX reconstruction, mask unpacking, normalization, and
-aligned augmentation.
-
-## Train
-
-Check the dataset/model interface without training or changing weights:
+## 显式训练与恢复
 
 ```bash
-cd /home/Users_Work_Space/zsfang/lunarRM
-python check_setup.py
+# 默认和 --dry-run 都只检查配置，不创建运行目录或更新权重。
+python scripts/train.py --config configs/N0.json --device cpu --dry-run
+# 后续明确决定开始正式训练时才执行：
+MKL_THREADING_LAYER=GNU python scripts/train.py --config configs/N0.json \
+  --device cuda --output-dir runs/N0 --execute
+# 默认从 checkpoint 重建原配置，继续相同总 epoch 预算：
+MKL_THREADING_LAYER=GNU python scripts/train.py --resume runs/N0/last.pt --execute
 ```
 
-The committed full-training settings are in `run_train.sh`:
+AdamW 与余弦调度按配置运行，AMP 仅在显式开启且使用 CUDA 时启用。
+损失或梯度非有限立即中止；全空 mask batch 不调用 optimizer，epoch 调度仍推进。
+日志 `metrics.jsonl` 记录有效像素、跳过项/空 batch、截断数量、学习率、更新数、
+训练 batch 平均误差（不作为验证指标）及完整 raw dB 验证结果。
+仅完整双频且两个频段有有效像素时更新 `best.pt`；否则保留 null，不伪造 best。
 
-```bash
-cd /home/Users_Work_Space/zsfang/lunarRM
-bash run_train.sh
-```
+`last.pt`/`best.pt` 以同目录临时文件、fsync、原子替换保存。内容包括模型、AdamW、
+调度器、AMP、epoch/更新数、Python/NumPy/Torch/CUDA 随机数、sampler、最佳指标、
+解析后配置、数据身份、源码摘要和运行环境。**仅承诺 epoch 边界恢复**；不支持 batch 中途恢复。
+恢复保留原总 epochs（余弦预算），拒绝配置/数据/特征顺序/模型不兼容、调度器或优化器重置。
+同目录只允许续接自己的 `last.pt`，并核对日志末行与 checkpoint 边界；若保存与日志追加之间
+异常退出造成不一致，可指定新的 `--output-dir` 从 checkpoint 分支恢复，原日志不被修改。
+CPU 单线程合成测试已验证连续运行与恢复逐值一致；GPU/AMP 正确性尚未在 GPU 上实测。
+spawn worker 在 Conda MKL INTEL 环境下须通过启动环境指定 GNU 后端，程序会明确拒绝已知冲突组合。
 
-For a short CPU trial:
-
-```bash
-python train.py \
-  --epochs 2 \
-  --batch-size 4 \
-  --base-channels 8 \
-  --max-train-steps 100 \
-  --max-val-batches 50 \
-  --output-dir runs/cpu_trial
-```
-
-Metrics are appended to `metrics.jsonl`. `best.pt` is selected by the unweighted
-mean of the 415 MHz and 5.775 GHz validation RMSE values in dB.
-
-Checkpoints contain the model, optimizer, learning-rate scheduler, AMP scaler,
-epoch, global step, and best metric. Resume with `--resume path/to/last.pt`.
+旧根目录 `train.py`、`run_train.sh` 和 `check_setup.py` 暂保留原型行为，尚未迁移；
+它们采用旧目标/评价协议，不能作为上述实验框架的正式训练入口。使用 `scripts/` 中的新命令。
+当前只有合成夹具优化正确性测试，没有正式 LunarRM 训练结果。
