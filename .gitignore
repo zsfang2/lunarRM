@@ -1,0 +1,29 @@
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+.coverage
+htmlcov/
+
+# Experiment outputs and local workflow state
+/runs/
+/reports/
+/cache/
+/.humanize/
+*.pt
+*.pth
+*.ckpt
+
+# Local datasets and archives
+*.npy
+*.npz
+*.zip
+
+# Local secrets
+.env
+.env.*
+!.env.example
