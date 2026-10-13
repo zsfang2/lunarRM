@@ -35,7 +35,12 @@ python -m pytest tests/test_data.py -q -m real_data
 大型数组记录形状、dtype、大小和修改时间，这不是数组全内容校验和。
 
 `lunar_rm.data.LunarDataset` 返回独立的米制 DEM、原始 dB GT、官方 mask、TX 和双频身份；
-只读 mmap 在 worker 内重开。当前输入特征支持高度/TX/band，物理特征与增强在后续模块接入。
+只读 mmap 在 worker 内重开。当前输入特征支持高度/TX/band/FSPL；几何和剖面特征后续接入。
+`augment=True` 仅用于 train，同步变换 DEM/TX/原始 GT/mask，随后重算 FSPL。
+每个 epoch 的 DataLoader 迭代开始前调用 `dataset.set_epoch(epoch)`，共享 epoch 对 persistent
+worker 可见。增强由 seed、epoch、样本身份和频段确定，独立于 worker RNG。
+默认目标为原始 dB；显式 `target_mode="official_clipped"` 只截断 `training_target_db`，
+评价仍使用未截断的 `target_db`。FSPL 使用原始米制高度，Tx/Rx 地上高度分别为 3/1 m。
 默认测试使用合成数据，不需要真实数据或 GPU。spawn 测试显式使用 `MKL_THREADING_LAYER=GNU`，
 避免本机 Conda NumPy/PyTorch 的 Intel MKL 与 GNU OpenMP 冲突。
 

@@ -74,4 +74,3 @@ def validate_index_rows(rows, terrain_count, errors, split):
     if set(hm_to_terrain) != set(range(terrain_count)):
         errors.append(f"{split}: hm_row coverage does not match heightmaps")
     return terrains
-
