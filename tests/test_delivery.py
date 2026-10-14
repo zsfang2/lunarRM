@@ -72,7 +72,7 @@ def test_summary_cli_and_legacy_training_entry_are_safe(tmp_path):
     assert json.loads((out / "results.json").read_text())["records"][0]["status"] == "not_run"
     assert (out / "results.csv").is_file()
     assert subprocess.run(cmd, capture_output=True, timeout=30).returncode != 0
-    for entry in ([sys.executable, "train.py"], ["bash", "run_train.sh"]):
+    for entry in ([sys.executable, "train.py"], ["bash", "run_train.sh", "--dry-run"]):
         run = subprocess.run([*entry, "--device", "cpu", "--output-dir", str(tmp_path / "absent")],
                              cwd=PROJECT_ROOT, text=True, capture_output=True, timeout=30)
         assert run.returncode == 0, run.stderr

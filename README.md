@@ -88,7 +88,67 @@ R1/R2 的物理特征在 CPU 计算，可在 JSON 配置中设置 `cache_dir` �
 
 ## 训练
 
-先检查配置；默认不带 `--execute` 时也只做 dry-run，不读取训练数据或更新权重。
+安装依赖并激活环境后，在仓库目录直接运行：
+
+```bash
+conda activate lunar
+bash run_train.sh -gpu 0
+```
+
+这会直接训练完整模型 **R2**，默认读取 `/home/DataDisk/zsfang/lunarRM`，
+训练 20 轮，每轮自动验证，最佳权重保存到 `runs/R2/best.pt`。
+脚本自动设置线程库环境变量。换 GPU 只需修改 `-gpu` 后的编号。
+
+```bash
+bash run_train.sh --experiment N0 -gpu 0  # 改跑基础模型，保存到 runs/N0
+bash run_train.sh -gpu 0 --dry-run       # 只检查，不训练
+bash run_train.sh --resume runs/R2/last.pt -gpu 0  # 中断后恢复
+```
+
+如果 `runs/R2` 已存在，新实验可加 `--output-dir runs/R2_run2`。
+
+日常使用建议明确写出 **GPU 编号、实验名称和输出目录**，无需修改脚本。
+以下默认值适用于 `run_train.sh` 未提供自定义配置或恢复 checkpoint 的情况：
+
+| 参数 | 默认值 | 使用建议 |
+| --- | --- | --- |
+| `-gpu` / `--gpu` | 未指定时使用默认 CUDA 设备，通常为可见的第 0 张卡 | 每次明确指定空闲 GPU；不能与 `--device` 同时使用 |
+| `--experiment` | `R2` | 每次明确指定，便于记录模型和消融实验 |
+| `--output-dir` | `runs/实验名称` | 每次新训练指定尚不存在的目录，区分模型、seed 和重复运行 |
+| `--data-root` | `/home/DataDisk/zsfang/lunarRM` | 数据移动或换机器时修改；路径不变可省略 |
+| `--epochs` | `20` | 初始训练预算；模型对照时保持一致，恢复时保持原总轮数 |
+| `--batch-size` | `16` | 根据显存调整；双频训练必须为偶数 |
+| `--num-workers` | `4` | 数据加载进程数，根据 CPU 和内存调整 |
+| `--seed` | `2027` | 模型对照使用相同 seed，多次重复实验再更换 |
+| `--amp` | 关闭 | 可选开启 GPU 混合精度；速度、显存和稳定性需实测 |
+
+推荐的新训练命令模板：
+
+```bash
+bash run_train.sh \
+  --experiment R2 \
+  -gpu 0 \
+  --output-dir runs/R2_seed2027 \
+  --epochs 20 \
+  --batch-size 16 \
+  --seed 2027
+```
+
+数据路径变更时，在命令末尾追加 `--data-root /你的数据目录`。
+训练会自动进行每轮完整验证，不需要额外添加验证参数。
+学习率、权重衰减等设置写在 JSON 中，通过 `--config configs/R2.json` 加载；
+命令行显式传入的训练参数覆盖 JSON 中的对应值。
+
+重新训练时换一个输出目录，例如 `--output-dir runs/R2_seed2027_run2`。
+中断后继续同一次训练则加载 `last.pt`，沿用其中的配置和总 epoch 预算：
+
+```bash
+bash run_train.sh --resume runs/R2_seed2027/last.pt -gpu 0
+```
+
+恢复时无需重复指定实验、配置和输出目录，也不要重新设置一套训练超参数。
+
+下面是详细入口：`scripts/train.py` 默认不带 `--execute` 时只做 dry-run，不读取训练数据或更新权重。
 
 ```bash
 python scripts/train.py --config configs/N0.json --device cpu --dry-run
@@ -139,7 +199,8 @@ MKL_THREADING_LAYER=GNU python scripts/train.py \
 MKL_THREADING_LAYER=GNU python scripts/train.py --resume runs/N0/last.pt --execute
 ```
 
-仅支持 epoch 边界恢复。`python train.py` 和 `bash run_train.sh` 接受相同参数。
+仅支持 epoch 边界恢复。`python train.py` 与 `scripts/train.py` 一样默认只检查；
+`bash run_train.sh` 接受相同参数，但默认选择 R2 并直接训练。
 
 ## 评估与其他工具
 
