@@ -29,3 +29,6 @@ htmlcov/
 .env
 .env.*
 !.env.example
+
+# Local development archive; excluded from the reproducible runtime repository
+/archive/

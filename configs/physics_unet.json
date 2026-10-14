@@ -1,0 +1,9 @@
+{
+  "experiment": "physics_unet",
+  "epochs": 20,
+  "batch_size": 16,
+  "num_workers": 4,
+  "seed": 2027,
+  "lr": 0.0003,
+  "weight_decay": 0.0001
+}

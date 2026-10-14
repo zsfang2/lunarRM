@@ -1,234 +1,163 @@
 # LunarRM
 
-基于 LunarRM 双频数据的月面路径损耗预测项目。输入为地形高程、发射机位置与频率，
-支持 Tiny U-Net、普通 U-Net 和物理特征引导的残差预测。使用官方固定 train/val 划分，
-在有效 mask 内按原始 dB 标签分别计算两频段 RMSE/MAE。
+月面双频路径损耗预测：输入地形、发射机位置和频段，输出 256×256 路径损耗图（dB）。
+使用官方 train/val 划分。模型为本项目实现，并非官方发布的 baseline；目前没有正式训练结果。
 
-训练、续训、评价与诊断代码已准备完成；目前没有正式训练结果。模型方案为本项目设计，
-不是官方发布的 baseline；GPU/AMP 尚未实测。
+## 文件结构
 
-## 目录结构
+仓库按“数据加载 → 模型 → 训练与验证”组织。下面列出运行相关文件；
+各 Python 包中的 `__init__.py` 仅用于包初始化，在目录树中省略。
 
 ```text
-lunar_rm/               数据、物理特征、模型、训练与评价模块
-configs/                模型及消融实验配置
-scripts/                训练、评估、检查与报告命令
-model.py                N1 普通 U-Net 实现（运行依赖）
-train.py / run_train.sh  训练兼容入口，转发到 scripts/train.py
-check_setup.py          无梯度前向检查兼容入口
-docs/                   数据协议、详细指南、固定样例与结果模板
-tests/                  合成数据及接口回归测试
-archive/development/    开发规划、验收记录和本地历史日志
-runs/                   训练输出（运行时创建，不入 Git）
-reports/                评估与测速报告（运行时创建，不入 Git）
-cache/                  可选物理特征缓存（不入 Git）
+lunarRM/
+├── README.md                   项目介绍与运行方法
+├── requirements.txt            运行依赖
+├── .gitignore                  排除数据、权重、缓存与本地归档
+├── train.py                    训练入口，默认训练完整模型
+├── run_train.sh                转入仓库目录并调用 train.py
+├── evaluate.py                 加载权重，独立评价验证集
+├── data/
+│   ├── README.md               数据格式与加载说明
+│   ├── paths.py                默认数据集路径
+│   ├── loader.py               读取样本并组装模型输入与标签
+│   ├── storage.py              只读访问 NPY 数组和 CSV 索引
+│   ├── features.py             自动计算固定物理与地形特征
+│   ├── transforms.py           归一化及训练数据增强
+│   ├── sampling.py             双频均衡采样
+│   └── cache.py                可选特征缓存
+├── models/
+│   ├── README.md               模型选择与可选对照说明
+│   ├── network.py              轻量 U-Net、模型构建与输出组合
+│   ├── unet.py                 普通 U-Net 对照网络
+│   └── presets.py              各模型的输入特征和输出方式
+├── training/
+│   ├── README.md               训练、验证与续训说明
+│   ├── config.py               配置解析与参数检查
+│   ├── engine.py               训练循环和每轮自动验证
+│   ├── losses.py               有效区域内的训练损失
+│   ├── metrics.py              双频 RMSE / MAE
+│   ├── evaluation.py           加载模型并执行验证
+│   ├── checkpoint.py           权重保存、读取和续训状态检查
+│   ├── reporting.py            可选分组指标统计
+│   └── provenance.py           记录本次运行的代码版本信息
+└── configs/
+    ├── README.md               配置使用方法
+    ├── physics_unet.json       完整模型常用超参数
+    └── tiny_unet.json          基础模型常用超参数
 ```
 
-## 环境与数据
+这些目录是代码职责划分，**不是需要逐个训练的模块**。训练入口自动加载数据、构造模型、
+更新 U-Net 参数并进行验证；固定特征与输出组合自动执行。独立验证入口加载训练好的权重，
+使用相同的数据处理与模型构建流程。
 
-### 创建 Conda 环境
+| 你想做什么 | 入口或文件 |
+| --- | --- |
+| 开始训练 | [train.py](train.py)，命令见下文 |
+| 更换数据位置 | 命令行 `--data-root`；长期修改默认值可编辑 [data/paths.py](data/paths.py) |
+| 修改学习率、轮数等超参数 | [configs/physics_unet.json](configs/physics_unet.json)，通过 `--config` 加载 |
+| 了解或修改网络结构 | [models/network.py](models/network.py)；模型选择见 [模型说明](models/README.md) |
+| 查看训练循环、损失与验证方式 | [训练说明](training/README.md) |
+| 验证已有权重 | [evaluate.py](evaluate.py) |
 
-先进入仓库，再创建并激活名为 `lunar` 的环境：
+运行产生的目录均不纳入 Git：`runs/` 保存权重和训练日志，`reports/` 保存独立验证报告，
+`cache/` 保存可选特征缓存，使用时自动创建。原始数据默认位于仓库外的
+`/home/DataDisk/zsfang/lunarRM`，`data/` 目录只放加载代码。
+
+开发测试、检查工具和历史文档仅保留在本地 `archive/`，不纳入 Git；克隆仓库不需要这些文件。
+各目录的细节可继续阅读 [数据说明](data/README.md)、[模型说明](models/README.md)、
+[训练说明](training/README.md) 和 [配置说明](configs/README.md)。
+
+## 安装环境
 
 ```bash
-cd /home/Users_Work_Space/zsfang/lunarRM
 conda create -n lunar python=3.11 pip -y
 conda activate lunar
-```
-
-如果当前终端未初始化 Conda，先执行 `source "$(conda info --base)/etc/profile.d/conda.sh"`，
-再运行 `conda activate lunar`。
-
-### 安装依赖
-
-下面是当前 H100 / 535 系列驱动机器的安装方案，使用
-[PyTorch 官方提供的 CUDA 12.1 构建](https://pytorch.org/get-started/previous-versions/)。
-先安装指定 PyTorch，再安装项目依赖；在其他机器上应按其驱动选择相应的 PyTorch 构建。
-
-```bash
 python -m pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
-python -m pip install -r requirements-dev.txt
-```
-
-已按项目源码和官方加载器核对直接依赖：`requirements.txt` 包含 NumPy、PyTorch、Matplotlib；
-`requirements-dev.txt` 包含上述运行依赖以及 pytest。间接依赖由 pip 自动安装。
-如果只运行训练、不运行测试，第二条命令可改为 `python -m pip install -r requirements.txt`。
-
-安装后检查依赖冲突和 GPU 可见性：
-
-```bash
+python -m pip install -r requirements.txt
 python -m pip check
-python -c "import numpy, matplotlib, torch; print('PyTorch:', torch.__version__); print('CUDA build:', torch.version.cuda); print('GPU available:', torch.cuda.is_available())"
+python -c "import torch; print(torch.__version__); print('GPU available:', torch.cuda.is_available())"
 ```
 
-GPU 训练前应看到 `GPU available: True`；上述检查不启动训练。后续打开新终端时先执行
-`conda activate lunar`，再运行训练命令。以上安装方案尚未在新建的 `lunar` 环境中完成验证。
+上面采用 CUDA 12.1 的 PyTorch 构建，适用于本机 H100 / 535 系列驱动；其他机器按驱动选择
+[PyTorch 构建](https://pytorch.org/get-started/previous-versions/)。新建 lunar 环境的安装验证尚未完成。
+如果 `conda activate` 不可用，先运行 `source "$(conda info --base)/etc/profile.d/conda.sh"`。
 
-### 数据
+## 直接训练
 
-默认数据目录为 `/home/DataDisk/zsfang/lunarRM`，可用 `--data-root` 覆盖。
-读取现有官方合并 NPY 数组与索引，不需要重新解压或复制数据；原始数据只读。
-数据包含 DEM、Tx 索引、415/5775 MHz 路径损耗图和有效 mask，图像大小为 256×256。
-验证集共 4,660 个双频样本项，当前无独立 test。详细语义见 [数据协议](docs/data-contract.md)。
-
-## 模型选择
-
-| 配置 | 方法 |
-| --- | --- |
-| A0 | 三维自由空间路径损耗（FSPL），无需训练 |
-| N0 | Tiny U-Net，直接预测 |
-| N1 | 普通 U-Net，容量对照 |
-| R0 | Tiny U-Net，输入加入 FSPL 并预测其残差 |
-| G0 | 与 R0 同输入、同主干，改为直接预测 |
-| R1 | R0 加入地形几何特征 |
-| R2 | R1 加入 LoS/Fresnel 特征 |
-
-`configs/R2_*.json` 提供特征、损失和 NLoS 权重消融。可先按 N0 → R0/G0 → R1/R2 组织对照。
-R1/R2 的物理特征在 CPU 计算，可在 JSON 配置中设置 `cache_dir` 为独立缓存目录。
-
-## 训练
-
-安装依赖并激活环境后，在仓库目录直接运行：
+进入仓库并激活环境后：
 
 ```bash
-conda activate lunar
-bash run_train.sh -gpu 0
+python train.py -gpu 0
+# 或者：bash run_train.sh -gpu 0
 ```
 
-这会直接训练完整模型 **R2**，默认读取 `/home/DataDisk/zsfang/lunarRM`，
-训练 20 轮，每轮自动验证，最佳权重保存到 `runs/R2/best.pt`。
-脚本自动设置线程库环境变量。换 GPU 只需修改 `-gpu` 后的编号。
+默认训练完整模型 `physics_unet`，读取 `/home/DataDisk/zsfang/lunarRM`，训练 20 轮，
+每轮自动验证，最佳权重保存到 `runs/physics_unet/best.pt`。
+**只有 U-Net 网络需要训练**。其他固定处理在训练和验证/推理的数据流程中自动完成，
+不需要单独训练、预加载或分阶段启动。各模型独立训练，无需先训练基础模型再训练完整模型。
+
+日常建议明确指定 GPU、模型和输出目录：
 
 ```bash
-bash run_train.sh --experiment N0 -gpu 0  # 改跑基础模型，保存到 runs/N0
-bash run_train.sh -gpu 0 --dry-run       # 只检查，不训练
-bash run_train.sh --resume runs/R2/last.pt -gpu 0  # 中断后恢复
+python train.py --experiment physics_unet -gpu 0 --output-dir runs/physics_unet_seed2027
 ```
 
-如果 `runs/R2` 已存在，新实验可加 `--output-dir runs/R2_run2`。
+先跑基础 U-Net 对照：
 
-日常使用建议明确写出 **GPU 编号、实验名称和输出目录**，无需修改脚本。
-以下默认值适用于 `run_train.sh` 未提供自定义配置或恢复 checkpoint 的情况：
+```bash
+python train.py --experiment tiny_unet -gpu 0 --output-dir runs/tiny_unet_seed2027
+```
 
-| 参数 | 默认值 | 使用建议 |
+| 参数 | 默认值 | 什么时候修改 |
 | --- | --- | --- |
-| `-gpu` / `--gpu` | 未指定时使用默认 CUDA 设备，通常为可见的第 0 张卡 | 每次明确指定空闲 GPU；不能与 `--device` 同时使用 |
-| `--experiment` | `R2` | 每次明确指定，便于记录模型和消融实验 |
-| `--output-dir` | `runs/实验名称` | 每次新训练指定尚不存在的目录，区分模型、seed 和重复运行 |
-| `--data-root` | `/home/DataDisk/zsfang/lunarRM` | 数据移动或换机器时修改；路径不变可省略 |
-| `--epochs` | `20` | 初始训练预算；模型对照时保持一致，恢复时保持原总轮数 |
-| `--batch-size` | `16` | 根据显存调整；双频训练必须为偶数 |
-| `--num-workers` | `4` | 数据加载进程数，根据 CPU 和内存调整 |
-| `--seed` | `2027` | 模型对照使用相同 seed，多次重复实验再更换 |
-| `--amp` | 关闭 | 可选开启 GPU 混合精度；速度、显存和稳定性需实测 |
+| `-gpu` / `--gpu` | 默认 CUDA 设备，通常为可见的第 0 张卡 | 建议每次指定空闲 GPU |
+| `--experiment` | `physics_unet` | `tiny_unet` 为基础模型；其他可选对照见 models/README.md |
+| `--data-root` | `/home/DataDisk/zsfang/lunarRM` | 换数据位置或机器时修改 |
+| `--output-dir` | `runs/模型名称` | 新训练使用尚不存在的目录 |
+| `--epochs` | 20 | 初始预算；模型对比时保持一致 |
+| `--batch-size` | 16 | 根据显存调整，双频时必须为偶数 |
+| `--num-workers` | 4 | 根据 CPU/内存调整加载进程数 |
+| `--seed` | 2027 | 对照模型保持一致，重复实验时更换 |
+| `--lr` | 0.0003 | 调整学习率 |
+| `--weight-decay` | 0.0001 | 调整权重衰减 |
+| `--amp` | 关闭 | 可选混合精度，GPU/AMP 尚未实测 |
+| `--cache-dir` | 不使用缓存 | 可指定 `cache/physics`，自动缓存固定物理特征 |
+| `--dry-run` | 不启用 | 仅检查配置，不训练 |
 
-推荐的新训练命令模板：
+GPU 编号从 0 开始，指进程可见的设备。如果设置 `CUDA_VISIBLE_DEVICES=2`，只剩一张可见卡，
+应传 `-gpu 0`。`--device cpu` 可指定 CPU，不能与 `-gpu` 同时使用。
+线程库环境变量由入口自动设置，不需要手工添加。
 
-```bash
-bash run_train.sh \
-  --experiment R2 \
-  -gpu 0 \
-  --output-dir runs/R2_seed2027 \
-  --epochs 20 \
-  --batch-size 16 \
-  --seed 2027
-```
-
-数据路径变更时，在命令末尾追加 `--data-root /你的数据目录`。
-训练会自动进行每轮完整验证，不需要额外添加验证参数。
-学习率、权重衰减等设置写在 JSON 中，通过 `--config configs/R2.json` 加载；
-命令行显式传入的训练参数覆盖 JSON 中的对应值。
-
-重新训练时换一个输出目录，例如 `--output-dir runs/R2_seed2027_run2`。
-中断后继续同一次训练则加载 `last.pt`，沿用其中的配置和总 epoch 预算：
+要集中编辑超参数，可修改 [完整模型配置](configs/physics_unet.json)，然后运行：
 
 ```bash
-bash run_train.sh --resume runs/R2_seed2027/last.pt -gpu 0
+python train.py --config configs/physics_unet.json -gpu 0
 ```
 
-恢复时无需重复指定实验、配置和输出目录，也不要重新设置一套训练超参数。
+仅指定 `--experiment` 使用内置默认值；使用 `--config` 才会读取该 JSON。
+命令行显式参数优先于 JSON。检查配置可加 `--dry-run`。
 
-下面是详细入口：`scripts/train.py` 默认不带 `--execute` 时只做 dry-run，不读取训练数据或更新权重。
+## 恢复与验证
+
+中断后继续同一次训练：
 
 ```bash
-python scripts/train.py --config configs/N0.json --device cpu --dry-run
+python train.py --resume runs/physics_unet_seed2027/last.pt -gpu 0
 ```
 
-正式开始 N0 训练：
+沿用 checkpoint 中的设置和原总 epoch 预算，无需再次指定模型、配置或输出目录。
+仅支持 epoch 边界恢复；恢复时保持原设备配置。重新训练则使用新输出目录。
+
+输出目录保存 `config.json`（实际配置）、`metrics.jsonl`（每轮指标）、
+`last.pt`（续训状态）和 `best.pt`（双频等权 RMSE 最佳权重）。
+
+训练结束后独立验证最佳权重：
 
 ```bash
-MKL_THREADING_LAYER=GNU python scripts/train.py \
-  --config configs/N0.json \
-  --data-root /home/DataDisk/zsfang/lunarRM \
-  --device cuda --output-dir runs/N0 --execute
+python evaluate.py --checkpoint runs/physics_unet_seed2027/best.pt \
+  --device cuda:0 --output reports/physics_unet-val.json
 ```
 
-默认设置为 20 epochs、batch size 16、AdamW（学习率 3e-4）、余弦调度、MAE、seed 2027。
-可用 `--epochs`、`--batch-size`、`--num-workers`、`--seed` 覆盖；学习率等其他设置写入 JSON。
-双频 batch size 必须为偶数，CUDA 不可用时会报错。CPU 训练需显式指定 `--device cpu`；
-GPU 混合精度可加 `--amp`。`MKL_THREADING_LAYER=GNU` 用于避免本机多进程加载的线程库冲突。
-
-训练入口也支持 `-gpu x`（或 `--gpu x`），等价于 `--device cuda:x`；二者不可同时传入。
-例如指定第 2 号 GPU：
-
-```bash
-MKL_THREADING_LAYER=GNU python scripts/train.py \
-  --config configs/N0.json -gpu 2 --output-dir runs/N0_gpu2 --execute
-```
-
-编号从 0 开始，指当前进程可见 GPU 的编号。如果设置了 `CUDA_VISIBLE_DEVICES=2`，
-该进程仅看到一张卡，此时应传 `-gpu 0`。根目录 `train.py`、`run_train.sh` 同样支持此参数。
-
-训练其他方法时，同时更换配置与输出目录，例如 R0：
-
-```bash
-MKL_THREADING_LAYER=GNU python scripts/train.py \
-  --config configs/R0.json --device cuda --output-dir runs/R0 --execute
-```
-
-每次新训练使用不存在的输出目录，避免混写。输出包括：
-
-- `config.json`：解析后的配置、数据和代码身份。
-- `metrics.jsonl`：逐 epoch 训练日志与完整验证指标。
-- `last.pt`：最近完成 epoch 的恢复状态。
-- `best.pt`：按完整双频等权 RMSE 选出的最佳模型。
-
-从最近完成的 epoch 恢复，沿用原配置和总 epoch 预算：
-
-```bash
-MKL_THREADING_LAYER=GNU python scripts/train.py --resume runs/N0/last.pt --execute
-```
-
-仅支持 epoch 边界恢复。`python train.py` 与 `scripts/train.py` 一样默认只检查；
-`bash run_train.sh` 接受相同参数，但默认选择 R2 并直接训练。
-
-## 评估与其他工具
-
-训练后独立评估完整验证集；即使 checkpoint 使用 AMP 训练，也可在 CPU 上以 FP32 评价：
-
-```bash
-python scripts/evaluate.py --checkpoint runs/N0/best.pt \
-  --device cpu --num-workers 0 --output reports/n0-val.json
-```
-
-A0 无需 checkpoint，改用 `--experiment A0`。加 `--max-per-band 2` 只作小子集检查，
-不能作为完整验证结果。验证集用于选模，指标不应称为独立测试性能。
-
-| 工具 | 用途 |
-| --- | --- |
-| `scripts/check_config.py` | 配置校验与 dry-run |
-| `scripts/audit_data.py` | 只读数据审计 |
-| `scripts/check_forward.py` | 双频无梯度前向检查 |
-| `scripts/diagnose.py` | 分组指标及固定样例可视化 |
-| `scripts/benchmark.py` | 特征生成、网络与端到端推理测速 |
-| `scripts/summarize.py` | 汇总已有报告或生成空结果表 |
-
-具体命令与测量边界见 [详细指南](docs/experiment-guide.md)，实验顺序见
-[执行清单](docs/run-checklist.md)。开发材料已移至 [开发归档](archive/development/README.md)。
-
-开发测试（默认使用合成数据，不启动正式训练）：
-
-```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest -q
-```
+完整验证包含 4,660 个双频样本项；在官方有效 mask 内，使用原始 dB 标签计算各频段 RMSE/MAE。
+验证集用于选模，不能作为独立测试集性能。更多说明见
+[数据加载](data/README.md)、[模型](models/README.md)、[训练](training/README.md)。
