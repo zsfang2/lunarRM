@@ -18,8 +18,11 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config")
     parser.add_argument("--experiment")
-    for key in ("data-root", "output-dir", "device", "resume", "loss"):
+    for key in ("data-root", "output-dir", "resume", "loss"):
         parser.add_argument(f"--{key}")
+    device = parser.add_mutually_exclusive_group()
+    device.add_argument("--device")
+    device.add_argument("-gpu", "--gpu", type=int, help="visible CUDA index; equivalent to --device cuda:N")
     for key in ("epochs", "batch-size", "num-workers", "seed", "width", "groups"):
         parser.add_argument(f"--{key}", type=int)
     parser.add_argument("--amp", action="store_true", default=None)
@@ -31,7 +34,12 @@ def main(argv=None):
     execute, threads = args.pop("execute"), args.pop("threads")
     args.pop("dry_run")
     path, experiment = args.pop("config"), args.pop("experiment")
+    gpu = args.pop("gpu")
     try:
+        if gpu is not None:
+            if gpu < 0:
+                raise ValueError("gpu index must be nonnegative")
+            args["device"] = f"cuda:{gpu}"
         if threads < 1:
             raise ValueError("threads must be positive")
         torch.set_num_threads(threads)

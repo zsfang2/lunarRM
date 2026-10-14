@@ -108,6 +108,17 @@ MKL_THREADING_LAYER=GNU python scripts/train.py \
 双频 batch size 必须为偶数，CUDA 不可用时会报错。CPU 训练需显式指定 `--device cpu`；
 GPU 混合精度可加 `--amp`。`MKL_THREADING_LAYER=GNU` 用于避免本机多进程加载的线程库冲突。
 
+训练入口也支持 `-gpu x`（或 `--gpu x`），等价于 `--device cuda:x`；二者不可同时传入。
+例如指定第 2 号 GPU：
+
+```bash
+MKL_THREADING_LAYER=GNU python scripts/train.py \
+  --config configs/N0.json -gpu 2 --output-dir runs/N0_gpu2 --execute
+```
+
+编号从 0 开始，指当前进程可见 GPU 的编号。如果设置了 `CUDA_VISIBLE_DEVICES=2`，
+该进程仅看到一张卡，此时应传 `-gpu 0`。根目录 `train.py`、`run_train.sh` 同样支持此参数。
+
 训练其他方法时，同时更换配置与输出目录，例如 R0：
 
 ```bash

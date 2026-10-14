@@ -134,6 +134,23 @@ def test_cli_help_and_dry_run_do_not_update_weights(monkeypatch, tmp_path, capsy
     assert exc.value.code == 0
 
 
+@pytest.mark.parametrize("flag", ["-gpu", "--gpu"])
+def test_training_gpu_alias_selects_visible_device(tmp_path, monkeypatch, capsys, flag):
+    from scripts.train import main as train_main
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    output = tmp_path / "unused"
+    train_main([flag, "1", "--output-dir", str(output), "--dry-run"])
+    report = json.loads(capsys.readouterr().out)
+    assert report["config"]["device"] == "cuda:1"
+    assert report["training_started"] is False and not output.exists()
+    for arguments in ([flag, "-1"], [flag, "2"], [flag, "0", "--device", "cpu"]):
+        with pytest.raises(SystemExit) as error:
+            train_main([*arguments, "--output-dir", str(output)])
+        assert error.value.code == 2
+    assert not output.exists()
+
+
 def test_cli_invocation_outside_repo(tmp_path):
     script = PROJECT_ROOT / "scripts" / "check_config.py"
     result = subprocess.run([sys.executable, str(script), "--config", "configs/G0.json", "--check"],
