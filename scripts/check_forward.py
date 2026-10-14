@@ -14,6 +14,7 @@ import torch
 from lunar_rm.config import resolve_config, validate_runtime
 from lunar_rm.data import dataset_from_config
 from lunar_rm.models import build_model, parameter_report
+from lunar_rm.provenance import code_identity
 
 
 def main():
@@ -26,6 +27,7 @@ def main():
     if args.threads <= 0:
         parser.error("threads must be positive")
     torch.set_num_threads(args.threads)
+    code = code_identity()
     for name in args.experiments:
         cfg = resolve_config(experiment=name, overrides={"data_root": args.data_root, "device": args.device})
         validate_runtime(cfg)
@@ -40,7 +42,10 @@ def main():
             if tuple(output.shape) != (1, 1, 256, 256) or not torch.isfinite(output).all():
                 raise RuntimeError(f"invalid output for {name}/{sample['band']}")
             print(json.dumps({"experiment": name, "sample_id": sample["sample_id"], "band": sample["band"],
-                              "shape": list(output.shape), **parameter_report(model), "training_started": False}))
+                              "shape": list(output.shape), **parameter_report(model), "training_started": False,
+                              "weights": "analytic" if cfg.model == "fspl" else "untrained",
+                              "config": cfg.to_dict(), "data_identity": {"val": ds.identity},
+                              "code_identity": code}))
 
 
 if __name__ == "__main__":
