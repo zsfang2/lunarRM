@@ -150,6 +150,31 @@ class LunarDataset(Dataset):
             self.cache.put(key, identity, result)
         return result
 
+    def build_inputs(self, dem, tx_position, row, band, code=0):
+        """Build label-free CPU model inputs from a DEM and transmitter geometry."""
+        r, c = tx_position
+        tx = np.zeros(dem.shape, dtype=np.float32)
+        tx[r, c] = 1
+        channel = {"height": normalize_height(dem), "tx": tx,
+                   "band": np.full(dem.shape, float(band == "58"), dtype=np.float32)}
+        physical = self._physical(dem, (r, c), row, band, code)
+        physics = {}
+        for name, value in physical.items():
+            if name == "fspl":
+                channel[name] = normalize_pathloss(value)
+                physics["baseline_db"] = torch.from_numpy(value.astype(np.float32)[None])
+            elif name in ("relative_row", "relative_col"):
+                channel[name] = value / 256.0
+            elif name == "relative_height":
+                channel[name] = value / 496.0
+            elif name != "clearance_m":
+                channel[name] = value.astype(np.float32)
+            if name == "los":
+                physics["geometric_los"] = torch.from_numpy(value[None])
+        features = (np.stack([channel[k] for k in self.feature_names]).astype(np.float32)
+                    if self.feature_names else np.empty((0, *dem.shape), dtype=np.float32))
+        return {**physics, "features": torch.from_numpy(features)}
+
     def __getitem__(self, index):
         if index < 0:
             index += len(self)
@@ -171,30 +196,14 @@ class LunarDataset(Dataset):
         if code:
             dem, target, mask, tx = (spatial_transform(a, code) for a in (dem, target, mask, tx))
             r, c = (int(v) for v in np.argwhere(tx == 1)[0])
-        channel = {"height": normalize_height(dem), "tx": tx,
-                   "band": np.full(GRID, float(band == "58"), dtype=np.float32)}
-        physical = self._physical(dem, (r, c), row, band, code)
-        physics = {}
-        for name, value in physical.items():
-            if name == "fspl":
-                channel[name] = normalize_pathloss(value)
-                physics["baseline_db"] = torch.from_numpy(value.astype(np.float32)[None])
-            elif name in ("relative_row", "relative_col"):
-                channel[name] = value / 256.0  # metre offsets / fixed map width in metres
-            elif name == "relative_height":
-                channel[name] = value / 496.0
-            elif name != "clearance_m":
-                channel[name] = value.astype(np.float32)
-            if name == "los":
-                physics["geometric_los"] = torch.from_numpy(value[None])
-        features = np.stack([channel[k] for k in self.feature_names]).astype(np.float32) if self.feature_names else np.empty((0, *GRID), dtype=np.float32)
+        inputs = self.build_inputs(dem, (r, c), row, band, code)
         training_target = np.clip(target, 20, 228) if self.target_mode == "official_clipped" else target.copy()
-        return {**physics, "raw_dem_m": torch.from_numpy(dem[None]), "tx_map": torch.from_numpy(tx[None]),
+        return {**inputs, "raw_dem_m": torch.from_numpy(dem[None]), "tx_map": torch.from_numpy(tx[None]),
                 "target_db": torch.from_numpy(target[None]), "valid_mask": torch.from_numpy(mask[None]),
                 "training_target_db": torch.from_numpy(training_target[None]),
                 "clipped_valid_pixels": int(np.count_nonzero(mask & ((target < 20) | (target > 228)))) if self.target_mode == "official_clipped" else 0,
                 "augmentation_code": code,
-                "features": torch.from_numpy(features), "sample_id": row["sample_id"],
+                "sample_id": row["sample_id"],
                 "terrain_id": row["terrain_id"], "band": band, "split": self.split,
                 "index_row": row_idx, "hm_row": hm_row, "tx_index": int(row["tx_index"]),
                 "group": row["group"], "tx_row": r, "tx_col": c,

@@ -13,7 +13,8 @@ def evaluation_indices(dataset, max_per_band=None):
     return [b * rows + i for b in range(len(dataset.bands)) for i in range(count)]
 
 
-def evaluate_model(model, dataset, *, batch_size=16, device="cpu", num_workers=0, max_per_band=None):
+def evaluate_model(model, dataset, *, batch_size=16, device="cpu", num_workers=0, max_per_band=None,
+                   grouped=False, coverage_edges=(0.5, 0.9)):
     if dataset.split != "val" or dataset.augment:
         raise ValueError("evaluation requires unaugmented fixed val data")
     if type(batch_size) is not int or batch_size < 1 or type(num_workers) is not int or num_workers < 0:
@@ -29,6 +30,8 @@ def evaluate_model(model, dataset, *, batch_size=16, device="cpu", num_workers=0
     was_training = model.training
     model.to(device).eval()
     metrics, seen = BandMetrics(), []
+    from .reporting import GroupedMetrics
+    diagnostic = GroupedMetrics(coverage_edges) if grouped else None
     try:
         with torch.inference_mode():
             for batch in loader:
@@ -36,6 +39,11 @@ def evaluate_model(model, dataset, *, batch_size=16, device="cpu", num_workers=0
                 baseline = batch.get("baseline_db")
                 pred = model(features, baseline.to(device) if baseline is not None else None)
                 metrics.update(pred.cpu(), batch["target_db"], batch["valid_mask"], batch["band"])
+                if diagnostic is not None:
+                    if "geometric_los" not in batch:
+                        raise ValueError("grouped evaluation requires geometric_los; set need_los=True")
+                    diagnostic.update(pred.cpu(), batch["target_db"], batch["valid_mask"], batch["band"],
+                                      batch["geometric_los"], batch["group"], batch["terrain_id"])
                 seen.extend(zip(batch["band"], batch["sample_id"]))
     finally:
         model.train(was_training)
@@ -43,27 +51,35 @@ def evaluate_model(model, dataset, *, batch_size=16, device="cpu", num_workers=0
         raise ValueError("missing, duplicate or unexpected validation identities")
     return {**metrics.report(), "scope": "full" if max_per_band is None else "subset",
             "items_seen": len(seen), "items_expected": len(expected),
-            "full_dataset_items": len(dataset), "max_per_band": max_per_band}
+            "full_dataset_items": len(dataset), "max_per_band": max_per_band,
+            **({"diagnostics": diagnostic.report()} if diagnostic is not None else {})}
 
 
-def evaluate_checkpoint(cfg, checkpoint=None, *, batch_size=None, max_per_band=None):
+def prepare_evaluation(cfg, checkpoint=None, *, need_los=False):
     from .checkpoint import read_checkpoint, validate_inference
     from .config import validate_runtime
     from .data import dataset_from_config
     from .models import build_model
-    from .provenance import code_identity
-    from .storage import file_identity
     validate_runtime(cfg)
     if cfg.model != "fspl" and checkpoint is None:
         raise ValueError("learned models require a checkpoint for evaluation")
-    dataset = dataset_from_config(cfg, "val")
+    dataset = dataset_from_config(cfg, "val", need_los=need_los)
     model = build_model(cfg)
     if checkpoint is not None:
         state = read_checkpoint(checkpoint)
         validate_inference(state, cfg, dataset)
         model.load_state_dict(state["model"], strict=True)
+    return model, dataset
+
+
+def evaluate_checkpoint(cfg, checkpoint=None, *, batch_size=None, max_per_band=None,
+                        grouped=False, coverage_edges=(0.5, 0.9)):
+    from .provenance import code_identity
+    from .storage import file_identity
+    model, dataset = prepare_evaluation(cfg, checkpoint, need_los=grouped)
     metrics = evaluate_model(model, dataset, batch_size=cfg.batch_size if batch_size is None else batch_size,
-                             device=cfg.device, num_workers=cfg.num_workers, max_per_band=max_per_band)
+                             device=cfg.device, num_workers=cfg.num_workers, max_per_band=max_per_band,
+                             grouped=grouped, coverage_edges=coverage_edges)
     return {"metrics": metrics, "config": cfg.to_dict(), "data_identity": {"val": dataset.identity},
             "code_identity": code_identity(), "checkpoint": file_identity(checkpoint, content_hash=True) if checkpoint else None,
             "target": "raw_db", "training_started": False}

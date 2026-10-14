@@ -8,6 +8,7 @@ import sys
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import numpy  # Initialize NumPy/MKL before PyTorch loads libgomp in Conda environments.
 import torch
 
 from lunar_rm.config import resolve_config, validate_runtime
