@@ -14,6 +14,8 @@ htmlcov/
 /reports/
 /cache/
 /.humanize/
+/archive/development/humanize/
+/archive/development/reports/
 *.pt
 *.pth
 *.ckpt

@@ -1,3 +1,5 @@
+# Direct runtime dependencies (including plotting and the official data loader).
+# Install a suitable PyTorch CUDA build first; see README.md for Conda setup.
 numpy>=1.24
 torch>=2.1
 matplotlib>=3.6

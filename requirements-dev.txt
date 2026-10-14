@@ -1,2 +1,3 @@
 -r requirements.txt
+# Tests use temporary synthetic data by default.
 pytest>=7
