@@ -121,3 +121,43 @@ def test_evaluation_cli_synthetic_a0(tmp_path):
     cmd[-1] = str(root / "forbidden.json")
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     assert result.returncode != 0 and not (root / "forbidden.json").exists()
+
+
+@pytest.mark.parametrize("entry", ["evaluate", "diagnose"])
+@pytest.mark.parametrize("explicit_config", [False, True])
+def test_cpu_inference_cli_accepts_amp_checkpoint(tmp_path, entry, explicit_config):
+    import hashlib
+    import json
+    import subprocess
+    import sys
+    from lunar_rm.config import PROJECT_ROOT
+    from lunar_rm.data import dataset_from_config
+    # Construct CPU weights with CUDA AMP training metadata; no GPU or optimizer required.
+    cfg = resolve_config(experiment="N0", overrides={"data_root": str(build_dataset(tmp_path / "data")),
+                         "device": "cuda", "amp": True, "width": 4, "groups": 2, "num_workers": 0})
+    ds = dataset_from_config(cfg, "val")
+    path = tmp_path / "amp.pt"
+    torch.save({"format_version": 1, "model": build_model(cfg).state_dict(), "config": cfg.to_dict(),
+                "data_identity": {"val": ds.identity}}, path)
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+    cmd = [sys.executable, str(PROJECT_ROOT / f"scripts/{entry}.py"), "--checkpoint", str(path),
+           "--device", "cpu", "--max-per-band", "1"]
+    if explicit_config:
+        config = tmp_path / "amp-config.json"
+        config.write_text(json.dumps(cfg.to_dict()))
+        cmd += ["--config", str(config)]
+    if entry == "evaluate":
+        output = tmp_path / "evaluation.json"
+        cmd += ["--output", str(output)]
+    else:
+        manifest = tmp_path / "examples.json"
+        manifest.write_text(json.dumps([{"band": "415", "sample_id": ds.rows[0]["sample_id"]}]))
+        output = tmp_path / "diagnosis" / "diagnostics.json"
+        cmd += ["--examples", str(manifest), "--output-dir", str(output.parent)]
+    run = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    assert run.returncode == 0, run.stderr
+    report = json.loads(output.read_text())
+    assert report["config"]["device"] == "cpu" and report["config"]["amp"] is False
+    assert report["target"] == "raw_db" and report["metrics"]["items_seen"] == 2
+    assert report["checkpoint"]["sha256"] == before == hashlib.sha256(path.read_bytes()).hexdigest()
+    assert report["training_started"] is False

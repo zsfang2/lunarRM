@@ -37,6 +37,7 @@ def main(argv=None):
         values.update({k: getattr(args, k) for k in ("data_root", "device", "batch_size", "num_workers")
                        if getattr(args, k) is not None})
         values["resume"] = None  # evaluation is not a training resume operation
+        values["amp"] = False  # Evaluation always uses FP32, even for AMP-trained weights.
         cfg = resolve_config(args.config, experiment=args.experiment, overrides=values)
         output = args.output.resolve()
         if output.is_relative_to(Path(cfg.data_root)):

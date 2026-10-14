@@ -37,7 +37,8 @@ def main(argv=None):
         torch.set_num_threads(a.threads)
         values = read_checkpoint(a.checkpoint)["config"].copy() if a.checkpoint and not a.config else {}
         values.update({k: getattr(a, k) for k in ("data_root", "device") if getattr(a, k) is not None})
-        values.update(resume=None, num_workers=0)
+        # Diagnostics use FP32 inference, independent of checkpoint training precision.
+        values.update(resume=None, num_workers=0, amp=False)
         cfg = resolve_config(a.config, experiment=a.experiment, overrides=values)
         out = a.output_dir.resolve()
         if out.exists() or out.is_relative_to(Path(cfg.data_root)) or Path(cfg.data_root).is_relative_to(out):

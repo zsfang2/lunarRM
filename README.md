@@ -84,6 +84,8 @@ python scripts/evaluate.py --checkpoint runs/N0/best.pt --device cpu \
 ```
 
 训练框架使用同一评价函数，生成的 checkpoint 可直接用于此独立评价入口。
+独立评价与诊断始终采用 FP32，解析报告配置中 `amp=false`；训练时启用 AMP 的 checkpoint
+也可用 `--device cpu` 评价。checkpoint 本身及其训练配置不变，训练/测速的 AMP 仍要求 CUDA。
 `--max-per-band 2` 直接选取各频段固定的前两项，输出标记为 `subset`，禁止用于完整验证选优。
 完整评价核对 `(band,sample_id)` 唯一身份和全部索引覆盖；对官方完整 val 应读取 4,660 项。
 逐频段以 float64 累计原始 dB GT 的 SSE/SAE/有效像素数，最后计算 RMSE/MAE，
